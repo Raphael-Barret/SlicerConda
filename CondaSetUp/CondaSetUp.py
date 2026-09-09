@@ -1272,7 +1272,10 @@ class CondaSetUpCall():
         '''
         self.settings = revisionSettings("SlicerConda")
         self.prefix = f"SlicerConda/{slicerInstallId()}"
-        self.migrateLegacySettings()
+        if not self.settings.value(self.key("condaPath"), ""):
+            self.migrateLegacySettings()
+        if not self.settings.value(self.key("condaPath"), ""):
+            self.discoverInstalledConda()
 
     def key(self,name):
         '''
@@ -1286,8 +1289,6 @@ class CondaSetUpCall():
         application wide file, unless it points inside another Slicer installation: such a
         Conda was set up for that other Slicer and must be chosen again here.
         '''
-        if self.settings.value(self.key("condaPath"), ""):
-            return
         legacyPath = QSettings("SlicerConda").value("condaPath", "")
         if not legacyPath or not os.path.isdir(legacyPath):
             return
@@ -1295,6 +1296,29 @@ class CondaSetUpCall():
         belongsToThisSlicer = os.path.realpath(legacyPath).startswith(slicerHome + os.sep)
         if belongsToThisSlicer or not isInsideSlicerInstall(legacyPath):
             self.setConda(legacyPath)
+
+    def discoverInstalledConda(self):
+        '''
+        Adopts a Miniconda already installed in this Slicer. The previous versions of
+        SlicerConda kept a single path for the whole machine, so a Slicer whose path was
+        overwritten by another one starts with nothing while its own Miniconda sits in place.
+        Only the folders this Slicer installs into are looked at, never another Slicer's.
+        '''
+        home = os.path.realpath(slicer.app.slicerHome)
+        for folder in ("bin", "lib", "."):
+            candidate = os.path.normpath(os.path.join(home, folder, "miniconda3"))
+            if os.path.isdir(candidate) and executableExists(self.condaExecutableIn(candidate)):
+                print("SlicerConda: adopting the Miniconda found in ", candidate)
+                self.setConda(candidate)
+                return
+
+    def condaExecutableIn(self,pathConda):
+        '''
+        Returns the path of the conda executable of a Miniconda installation.
+        '''
+        if platform.system()=="Windows":
+            return os.path.join(self.convert_path(pathConda),"Scripts","conda")
+        return os.path.join(pathConda,"bin","conda")
 
     def convert_path(self,unix_path):
         '''
@@ -1309,11 +1333,10 @@ class CondaSetUpCall():
         '''
         if pathConda:
             self.settings.setValue(self.key("condaPath"), pathConda)
+            self.settings.setValue(self.key("conda/executable"), self.condaExecutableIn(pathConda))
             if platform.system()=="Windows":
-                self.settings.setValue(self.key("conda/executable"), os.path.join(self.convert_path(pathConda),"Scripts","conda"))
                 self.settings.setValue(self.key("activate/executable"),os.path.join(self.convert_path(pathConda),"Scripts","activate"))
             else :
-                self.settings.setValue(self.key("conda/executable"),os.path.join(pathConda,"bin","conda"))
                 self.settings.setValue(self.key("activate/executable"),os.path.join(pathConda,"bin","activate"))
             self.settings.sync()
 

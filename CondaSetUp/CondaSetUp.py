@@ -22,6 +22,7 @@ import platform
 import subprocess
 import shutil
 import urllib
+import hashlib
 import multiprocessing
 from qt import (QFileDialog,QSettings,QDialogButtonBox,QComboBox,QVBoxLayout,QDialog,QLabel,QWidget,QApplication,QListWidget,QPushButton,QLineEdit,QMessageBox,QHBoxLayout,QTimer)
 import threading
@@ -857,12 +858,11 @@ class CondaSetUpWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         '''
         Sets the current Conda path in a line edit, differentiating between WSL and non-WSL environments.
         '''
-        if self.ui.checkBoxWsl.isChecked():
-            condaPath = self.conda_wsl.getCondaPath()
-        else :
-            condaPath = self.conda.getCondaPath()
+        conda = self.conda_wsl if self.ui.checkBoxWsl.isChecked() else self.conda
+        condaPath = conda.getCondaPath()
 
-        self.ui.lineEditPathFolder.setText(condaPath)
+        self.ui.lineEditPathFolder.setText("" if condaPath=="None" else condaPath)
+        self.ui.lineEditPathFolder.setToolTip(f"Conda used by this Slicer only ({slicer.app.slicerHome}).\nStored in {conda.settings.fileName()}")
 
     def testEnv(self):
         '''
@@ -911,6 +911,56 @@ class CondaSetUpWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
 
+def slicerInstallId():
+    '''
+    Returns an identifier of the running Slicer installation, built from its revision and from
+    the real path of its home directory, so that two Slicer versions installed on the same
+    machine, or two installations of the same revision, never share their Conda settings.
+    '''
+    home = os.path.realpath(slicer.app.slicerHome)
+    revision = slicer.app.revision or slicer.app.applicationVersion
+    return f"{revision}-{hashlib.sha256(home.encode('utf-8')).hexdigest()[:8]}"
+
+
+def revisionSettings(legacyName):
+    '''
+    Returns the settings of the running Slicer revision (Slicer-<revision>.ini), falling back
+    to the application wide file of the previous versions of SlicerConda when Slicer is too
+    old to provide revision settings.
+    '''
+    userSettings = getattr(slicer.app, "revisionUserSettings", None)
+    settings = userSettings() if userSettings else None
+    if settings:
+        return settings
+    return QSettings(legacyName)
+
+
+def isInsideSlicerInstall(path):
+    '''
+    Tells whether a path lives inside a Slicer installation directory, whichever it is. Used to
+    avoid importing into this Slicer a Conda that belongs to another one.
+    '''
+    markers = ["SlicerLauncherSettings.ini", "SlicerApp-real", "SlicerApp-real.exe"]
+    path = os.path.realpath(path)
+    while True:
+        if any(os.path.isfile(os.path.join(path, "bin", marker)) for marker in markers):
+            return True
+        parent = os.path.dirname(path)
+        if parent == path:
+            return False
+        path = parent
+
+
+def executableExists(path):
+    '''
+    Checks that an executable recorded in the settings is still on disk, accepting the
+    extensions Windows appends to the Conda entry points.
+    '''
+    if not path:
+        return False
+    return any(os.path.exists(path + extension) for extension in ("", ".exe", ".bat"))
+
+
 class CondaSetUpCallWsl():
     '''
     class for managing Conda environments within a Windows Subsystem for Linux (WSL) context, including installation, environment creation, deletion, and running Python scripts.
@@ -918,9 +968,30 @@ class CondaSetUpCallWsl():
 
     def __init__(self) -> None:
         '''
-        Initializes the class with settings specific to Conda and WSL.
+        Initializes the class with settings specific to Conda and WSL, scoped to the running
+        Slicer installation so that several Slicer versions keep their own WSL Conda.
         '''
-        self.settings = QSettings("SlicerCondaWSL")
+        self.settings = revisionSettings("SlicerCondaWSL")
+        self.prefix = f"SlicerCondaWSL/{slicerInstallId()}"
+        self.migrateLegacySettings()
+
+    def key(self,name):
+        '''
+        Prefixes a setting name with the identifier of the running Slicer installation.
+        '''
+        return f"{self.prefix}/{name}"
+
+    def migrateLegacySettings(self):
+        '''
+        Imports once the WSL settings written by the previous versions of SlicerConda into the
+        application wide file. A WSL Conda lives in the Linux distribution, never inside a
+        Slicer installation, so importing it is always safe.
+        '''
+        legacySettings = QSettings("SlicerCondaWSL")
+        if not self.settings.value(self.key("condaPath"), ""):
+            self.setConda(legacySettings.value("condaPath", ""))
+        if not self.settings.value(self.key("user"), ""):
+            self.setUser(legacySettings.value("user", ""))
 
     def testWslAvailable(self):
         '''
@@ -948,7 +1019,7 @@ class CondaSetUpCallWsl():
         '''
         Retrieves the stored path of the Conda installation.
         '''
-        condaPath = self.settings.value("condaPath", "")
+        condaPath = self.settings.value(self.key("condaPath"), "")
         return condaPath
 
     def setUser(self,user):
@@ -956,7 +1027,8 @@ class CondaSetUpCallWsl():
         Sets the WSL user in the settings.
         '''
         if user :
-            self.settings.setValue("user", user)
+            self.settings.setValue(self.key("user"), user)
+            self.settings.sync()
             print("USER : ",user)
 
     def setConda(self,pathConda):
@@ -964,16 +1036,17 @@ class CondaSetUpCallWsl():
         Sets the path of the Conda installation and related executables in the settings.
         '''
         if pathConda:
-            self.settings.setValue("condaPath", pathConda)
-            self.settings.setValue("conda/executable",self.settings.value("condaPath", "")+"/bin/conda")
-            self.settings.setValue("python3",self.settings.value("condaPath", "")+"/bin/python3")
-            self.settings.setValue("activate/executable",pathConda+"/bin/activate")
+            self.settings.setValue(self.key("condaPath"), pathConda)
+            self.settings.setValue(self.key("conda/executable"),pathConda+"/bin/conda")
+            self.settings.setValue(self.key("python3"),pathConda+"/bin/python3")
+            self.settings.setValue(self.key("activate/executable"),pathConda+"/bin/activate")
+            self.settings.sync()
 
     def getCondaExecutable(self):
         '''
         Returns the path to the Conda executable.
         '''
-        condaExe = self.settings.value("conda/executable", "")
+        condaExe = self.settings.value(self.key("conda/executable"), "")
         if condaExe:
             return (condaExe)
         return "None"
@@ -983,13 +1056,13 @@ class CondaSetUpCallWsl():
         '''
         Gets the WSL user from the settings.
         '''
-        return self.settings.value("user","")
+        return self.settings.value(self.key("user"),"")
 
     def getActivateExecutable(self):
         '''
         Provides the path to the Conda 'activate' script.
         '''
-        ActivateExe = self.settings.value("activate/executable", "")
+        ActivateExe = self.settings.value(self.key("activate/executable"), "")
         if ActivateExe:
             return (ActivateExe)
         return "None"
@@ -1189,9 +1262,35 @@ class CondaSetUpCallWsl():
 class CondaSetUpCall():
     def __init__(self) -> None:
         '''
-        Initializes the class and sets up QSettings for Conda configurations.
+        Initializes the class and sets up QSettings for Conda configurations. The settings are
+        scoped to the running Slicer installation, so that a Slicer never picks up the Conda
+        another Slicer installed on the same machine.
         '''
-        self.settings = QSettings("SlicerConda")
+        self.settings = revisionSettings("SlicerConda")
+        self.prefix = f"SlicerConda/{slicerInstallId()}"
+        self.migrateLegacySettings()
+
+    def key(self,name):
+        '''
+        Prefixes a setting name with the identifier of the running Slicer installation.
+        '''
+        return f"{self.prefix}/{name}"
+
+    def migrateLegacySettings(self):
+        '''
+        Imports once the Conda path written by the previous versions of SlicerConda into the
+        application wide file, unless it points inside another Slicer installation: such a
+        Conda was set up for that other Slicer and must be chosen again here.
+        '''
+        if self.settings.value(self.key("condaPath"), ""):
+            return
+        legacyPath = QSettings("SlicerConda").value("condaPath", "")
+        if not legacyPath or not os.path.isdir(legacyPath):
+            return
+        slicerHome = os.path.realpath(slicer.app.slicerHome)
+        belongsToThisSlicer = os.path.realpath(legacyPath).startswith(slicerHome + os.sep)
+        if belongsToThisSlicer or not isInsideSlicerInstall(legacyPath):
+            self.setConda(legacyPath)
 
     def convert_path(self,unix_path):
         '''
@@ -1205,20 +1304,21 @@ class CondaSetUpCall():
         Sets the Conda installation path and updates related executable paths in the settings based on the operating system.
         '''
         if pathConda:
-            self.settings.setValue("condaPath", pathConda)
+            self.settings.setValue(self.key("condaPath"), pathConda)
             if platform.system()=="Windows":
-                self.settings.setValue("conda/executable", os.path.join(self.convert_path(pathConda),"Scripts","conda"))
-                self.settings.setValue("activate/executable",os.path.join(self.convert_path(pathConda),"Scripts","activate"))
+                self.settings.setValue(self.key("conda/executable"), os.path.join(self.convert_path(pathConda),"Scripts","conda"))
+                self.settings.setValue(self.key("activate/executable"),os.path.join(self.convert_path(pathConda),"Scripts","activate"))
             else :
-                self.settings.setValue("conda/executable",os.path.join(self.settings.value("condaPath", ""),"bin","conda"))
-                self.settings.setValue("activate/executable",os.path.join(pathConda,"bin","activate"))
+                self.settings.setValue(self.key("conda/executable"),os.path.join(pathConda,"bin","conda"))
+                self.settings.setValue(self.key("activate/executable"),os.path.join(pathConda,"bin","activate"))
+            self.settings.sync()
 
     def getCondaExecutable(self):
         '''
         Retrieves the path to the Conda executable from the settings.
         '''
-        condaExe = self.settings.value("conda/executable", "")
-        if condaExe:
+        condaExe = self.settings.value(self.key("conda/executable"), "")
+        if executableExists(condaExe):
             return (condaExe)
         return "None"
 
@@ -1226,17 +1326,18 @@ class CondaSetUpCall():
         '''
         Gets the path to the Conda 'activate' script from the settings.
         '''
-        ActivateExe = self.settings.value("activate/executable", "")
-        if ActivateExe:
+        ActivateExe = self.settings.value(self.key("activate/executable"), "")
+        if executableExists(ActivateExe):
             return (ActivateExe)
         return "None"
 
     def getCondaPath(self):
         '''
-        Returns the stored Conda installation path from the settings.
+        Returns the stored Conda installation path from the settings, and reports no path when
+        that installation is gone, rather than handing out a dead path to the extensions.
         '''
-        condaPath = self.settings.value("condaPath", "")
-        if condaPath:
+        condaPath = self.settings.value(self.key("condaPath"), "")
+        if condaPath and os.path.isdir(condaPath):
             return (condaPath)
         return "None"
 

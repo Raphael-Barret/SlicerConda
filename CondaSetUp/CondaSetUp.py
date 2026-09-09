@@ -21,7 +21,7 @@ import platform
 
 import subprocess
 import shutil
-import urllib
+import urllib.request
 import hashlib
 import multiprocessing
 from qt import (QFileDialog,QSettings,QDialogButtonBox,QComboBox,QVBoxLayout,QDialog,QLabel,QWidget,QApplication,QListWidget,QPushButton,QLineEdit,QMessageBox,QHBoxLayout,QTimer)

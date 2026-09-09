@@ -862,7 +862,7 @@ class CondaSetUpWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         condaPath = conda.getCondaPath()
 
         self.ui.lineEditPathFolder.setText("" if condaPath=="None" else condaPath)
-        self.ui.lineEditPathFolder.setToolTip(f"Conda used by this Slicer only ({slicer.app.slicerHome}).\nStored in {conda.settings.fileName()}")
+        self.ui.lineEditPathFolder.setToolTip(f"Conda used by this Slicer only ({os.path.realpath(slicer.app.slicerHome)}).\nStored in {conda.settings.fileName()}")
 
     def testEnv(self):
         '''

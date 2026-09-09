@@ -1333,6 +1333,10 @@ class CondaSetUpCall():
         '''
         if pathConda:
             self.settings.setValue(self.key("condaPath"), pathConda)
+            # Written in clear next to the hashed key so the file says which Slicer it
+            # describes, both for the user reading it and for a support request.
+            self.settings.setValue(self.key("slicerHome"), os.path.realpath(slicer.app.slicerHome))
+            self.settings.setValue(self.key("slicerVersion"), slicer.app.applicationVersion)
             self.settings.setValue(self.key("conda/executable"), self.condaExecutableIn(pathConda))
             if platform.system()=="Windows":
                 self.settings.setValue(self.key("activate/executable"),os.path.join(self.convert_path(pathConda),"Scripts","activate"))

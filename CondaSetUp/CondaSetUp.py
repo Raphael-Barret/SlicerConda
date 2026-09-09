@@ -1678,17 +1678,16 @@ class CondaSetUpCall():
         if path_activate=="None":
             return "Path to conda no setup"
 
-        command_execute = f"source {path_activate} {env_name} &&"
         path_conda_exe = self.getCondaExecutable()
+        command_to_execute = [path_conda_exe, "run"]
         if env_name != "None":
-            command_execute = f"{path_conda_exe} run -n {env_name}"
-        else :
-            command_execute = f"{path_conda_exe} run"
-        for com in command :
-            command_execute = command_execute+ " "+com
+            command_to_execute = command_to_execute + ["-n", env_name]
+        # Hand the arguments over as a list: a bash line would split back a path holding a
+        # space, and would read a version pin such as numpy<2.0 as a redirection.
+        command_to_execute = command_to_execute + [str(com) for com in command]
 
-        print("command_execute dans conda run : ",command_execute)
-        result = subprocess.run(command_execute, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', env=slicer.util.startupEnvironment(),executable="/bin/bash")
+        print("command_to_execute dans conda run : ",command_to_execute)
+        result = subprocess.run(command_to_execute, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', env=slicer.util.startupEnvironment())
         if result.returncode == 0:
             print(f"Result: {result.stdout}")
             return (f"Result: {result.stdout}")

@@ -924,13 +924,17 @@ def slicerInstallId():
 
 def revisionSettings(legacyName):
     '''
-    Returns the settings of the running Slicer revision (Slicer-<revision>.ini), falling back
-    to the application wide file of the previous versions of SlicerConda when Slicer is too
-    old to provide revision settings.
+    Returns the settings of the running Slicer revision, which Slicer keeps in the installation
+    directory. An installation deployed read only, by a system administrator for instance,
+    cannot hold them: the settings of the user take over so that nothing is lost on exit, and
+    the keys stay prefixed by the installation identifier so the isolation holds either way.
     '''
-    userSettings = getattr(slicer.app, "revisionUserSettings", None)
-    settings = userSettings() if userSettings else None
-    if settings:
+    revisionUserSettings = getattr(slicer.app, "revisionUserSettings", None)
+    settings = revisionUserSettings() if revisionUserSettings else None
+    if settings and settings.isWritable():
+        return settings
+    settings = slicer.app.userSettings()
+    if settings and settings.isWritable():
         return settings
     return QSettings(legacyName)
 
